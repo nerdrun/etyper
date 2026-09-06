@@ -1,5 +1,6 @@
 import sys
 import time
+import textwrap
 from evdev import InputDevice, categorize, ecodes, list_devices
 
 SHIFT_MAP = {
@@ -16,8 +17,53 @@ SYMBOL_MAP = {
     'KEY_EQUAL': '=', 'KEY_GRAVE': '`',
 }
 
+LINE_WIDTH = 62
+
+def move_vertical_fast(text, cursor_idx, direction):
+    """Calculates vertical movement ONLY when Up/Down is actually pressed."""
+    if not text:
+        return 0
+
+    line_starts = []
+    current_pos = 0
+    raw_lines = text.split('\n')
+    
+    for r_idx, raw in enumerate(raw_lines):
+        if r_idx > 0:
+            current_pos += 1  # \n
+        wrapped = textwrap.wrap(raw, width=LINE_WIDTH) if raw else [""]
+        if not wrapped:
+            wrapped = [""]
+        for w in wrapped:
+            line_starts.append((current_pos, current_pos + len(w)))
+            current_pos += len(w)
+
+    current_line = 0
+    col_offset = 0
+    for idx, (start, end) in enumerate(line_starts):
+        if start <= cursor_idx <= end:
+            current_line = idx
+            col_offset = cursor_idx - start
+            break
+
+    target_line = current_line + direction
+    if target_line < 0 or target_line >= len(line_starts):
+        return cursor_idx
+
+    t_start, t_end = line_starts[target_line]
+    target_len = t_end - t_start
+    new_col = min(col_offset, target_len)
+    
+    return t_start + new_col
+
+def print_console_preview(text, cursor_index):
+    terminal_text = text[:cursor_index] + "█" + text[cursor_index:]
+    sys.stdout.write("\033[H\033[J")
+    sys.stdout.write("--- E-Typewriter Live Console ---\n\n")
+    sys.stdout.write(terminal_text)
+    sys.stdout.flush()
+
 def listen_for_keys(update_callback):
-    """Monitors ALL connected input devices simultaneously."""
     device_paths = list_devices()
     devices = []
     
@@ -33,16 +79,16 @@ def listen_for_keys(update_callback):
         sys.exit(1)
 
     print(f"Monitoring {len(devices)} input devices simultaneously...")
-    print("\n--- Shift & Special Character E-Typewriter Ready ---")
-    print("Type freely! Shift, Caps Lock, and punctuation are enabled.\n")
-
+    
     current_text = ""
+    cursor_index = 0
     shift_pressed = False
     caps_lock_active = False
 
+    print_console_preview(current_text, cursor_index)
+
     try:
         while True:
-            # Poll all open input devices
             for dev in devices:
                 try:
                     event = dev.read_one()
@@ -55,54 +101,78 @@ def listen_for_keys(update_callback):
                     if isinstance(keycode, list):
                         keycode = keycode[0]
 
-                    # --- Handle Shift Press / Release ---
                     if keycode in ('KEY_LEFTSHIFT', 'KEY_RIGHTSHIFT'):
                         shift_pressed = (key_event.keystate in (1, 2))
                         continue
 
-                    # --- Handle Caps Lock Toggle ---
                     if keycode == 'KEY_CAPSLOCK' and key_event.keystate == 1:
                         caps_lock_active = not caps_lock_active
                         continue
 
-                    # Process key-down events (keystate == 1)
                     if key_event.keystate == 1:
-                        char_to_add = None
-
-                        # --- Action: ENTER ---
-                        if keycode == 'KEY_ENTER':
-                            current_text += "\n"
-                            sys.stdout.write("\n")
-                            sys.stdout.flush()
-                            update_callback(current_text)
+                        
+                        # --- LEFT / RIGHT ARROWS (Fast Path) ---
+                        if keycode == 'KEY_LEFT':
+                            if cursor_index > 0:
+                                cursor_index -= 1
+                                print_console_preview(current_text, cursor_index)
+                                update_callback(current_text, cursor_index)
                             continue
 
-                        # --- Action: BACKSPACE ---
+                        elif keycode == 'KEY_RIGHT':
+                            if cursor_index < len(current_text):
+                                cursor_index += 1
+                                print_console_preview(current_text, cursor_index)
+                                update_callback(current_text, cursor_index)
+                            continue
+
+                        # --- UP / DOWN ARROWS (On-Demand Calculation) ---
+                        elif keycode == 'KEY_UP':
+                            cursor_index = move_vertical_fast(current_text, cursor_index, -1)
+                            print_console_preview(current_text, cursor_index)
+                            update_callback(current_text, cursor_index)
+                            continue
+
+                        elif keycode == 'KEY_DOWN':
+                            cursor_index = move_vertical_fast(current_text, cursor_index, 1)
+                            print_console_preview(current_text, cursor_index)
+                            update_callback(current_text, cursor_index)
+                            continue
+
+                        # --- ENTER KEY ---
+                        elif keycode == 'KEY_ENTER':
+                            current_text = current_text[:cursor_index] + "\n" + current_text[cursor_index:]
+                            cursor_index += 1
+                            print_console_preview(current_text, cursor_index)
+                            update_callback(current_text, cursor_index)
+                            continue
+
+                        # --- BACKSPACE KEY ---
                         elif keycode == 'KEY_BACKSPACE':
-                            if len(current_text) > 0:
-                                current_text = current_text[:-1]
-                                sys.stdout.write("\b \b")
-                                sys.stdout.flush()
-                                update_callback(current_text)
+                            if cursor_index > 0:
+                                current_text = current_text[:cursor_index - 1] + current_text[cursor_index:]
+                                cursor_index -= 1
+                                print_console_preview(current_text, cursor_index)
+                                update_callback(current_text, cursor_index)
                             continue
 
-                        # --- Action: SPACEBAR ---
+                        # --- SPACEBAR ---
                         elif keycode == 'KEY_SPACE':
-                            current_text += " "
-                            sys.stdout.write(" ")
-                            sys.stdout.flush()
-                            update_callback(current_text)
+                            current_text = current_text[:cursor_index] + " " + current_text[cursor_index:]
+                            cursor_index += 1
+                            print_console_preview(current_text, cursor_index)
+                            update_callback(current_text, cursor_index)
                             continue
 
-                        # --- Action: Punctuation & Symbols ---
-                        elif keycode in SYMBOL_MAP:
+                        # --- PUNCTUATION & SYMBOLS ---
+                        char_to_add = None
+                        if keycode in SYMBOL_MAP:
                             base_char = SYMBOL_MAP[keycode]
                             char_to_add = SHIFT_MAP.get(base_char, base_char) if shift_pressed else base_char
 
-                        # --- Action: Alphanumeric Keys ---
+                        # --- ALPHANUMERIC KEYS ---
                         elif str(keycode).startswith('KEY_'):
                             raw_key = str(keycode).replace('KEY_', '').lower()
-
                             if len(raw_key) == 1:
                                 if raw_key.isalpha():
                                     use_upper = shift_pressed ^ caps_lock_active
@@ -110,15 +180,13 @@ def listen_for_keys(update_callback):
                                 elif raw_key.isdigit():
                                     char_to_add = SHIFT_MAP.get(raw_key, raw_key) if shift_pressed else raw_key
 
-                        # Append character if mapped successfully
                         if char_to_add:
-                            current_text += char_to_add
-                            sys.stdout.write(char_to_add)
-                            sys.stdout.flush()
-                            update_callback(current_text)
+                            current_text = current_text[:cursor_index] + char_to_add + current_text[cursor_index:]
+                            cursor_index += 1
+                            print_console_preview(current_text, cursor_index)
+                            update_callback(current_text, cursor_index)
 
-            # Prevent high CPU spinning while idle
-            time.sleep(0.005)
+            time.sleep(0.002)
 
     finally:
         for dev in devices:

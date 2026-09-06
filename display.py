@@ -8,16 +8,16 @@ sys.path.append("./lib")
 from waveshare_epd import epd7in5_V2
 
 render_queue = queue.Queue(maxsize=1)
-
-# Cursor character style: '█' for solid block (Kindle style), '|' for thin bar
 CURSOR_CHAR = "█"
 
 def display_worker(epd, font):
-    """Background worker handling strict partial refreshes with cursor."""
+    """Worker rendering text with minimal buffer latency."""
     while True:
-        text = render_queue.get()
-        if text is None:
+        payload = render_queue.get()
+        if payload is None:
             break
+
+        text, cursor_index = payload
 
         canvas_w = max(epd.width, epd.height)  # 800
         canvas_h = min(epd.width, epd.height)  # 480
@@ -25,11 +25,10 @@ def display_worker(epd, font):
         image = Image.new('1', (canvas_w, canvas_h), 255)
         draw = ImageDraw.Draw(image)
 
-        # Append cursor to text for display rendering without modifying actual text
-        display_text_with_cursor = text + CURSOR_CHAR
+        text_with_cursor = text[:cursor_index] + CURSOR_CHAR + text[cursor_index:]
 
         formatted_lines = []
-        for raw_line in display_text_with_cursor.split('\n'):
+        for raw_line in text_with_cursor.split('\n'):
             if raw_line:
                 wrapped = textwrap.wrap(raw_line, width=62)
                 formatted_lines.extend(wrapped if wrapped else [""])
@@ -62,15 +61,17 @@ def init_display():
 
     worker = threading.Thread(target=display_worker, args=(epd, font), daemon=True)
     worker.start()
+
+    trigger_update("", 0)
     return epd
 
-def trigger_update(text):
+def trigger_update(text, cursor_index=0):
     if render_queue.full():
         try:
             render_queue.get_nowait()
         except queue.Empty:
             pass
-    render_queue.put(text)
+    render_queue.put((text, cursor_index))
 
 def cleanup_display(epd):
     render_queue.put(None)
