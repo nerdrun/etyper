@@ -9,8 +9,8 @@ from waveshare_epd import epd7in5_V2
 
 render_queue = queue.Queue(maxsize=1)
 
-# Thin pipe character for a subtle, crisp cursor
-CURSOR_CHAR = "|"
+# Cursor character style: '█' for solid block (Kindle style), '|' for thin bar
+CURSOR_CHAR = "█"
 
 def display_worker(epd, font):
     """Background worker handling strict partial refreshes with cursor."""
@@ -25,7 +25,7 @@ def display_worker(epd, font):
         image = Image.new('1', (canvas_w, canvas_h), 255)
         draw = ImageDraw.Draw(image)
 
-        # Always append cursor so it is visible even on an empty screen ("")
+        # Append cursor to text for display rendering without modifying actual text
         display_text_with_cursor = text + CURSOR_CHAR
 
         formatted_lines = []
@@ -62,10 +62,6 @@ def init_display():
 
     worker = threading.Thread(target=display_worker, args=(epd, font), daemon=True)
     worker.start()
-    
-    # Render thin cursor immediately on launch
-    trigger_update("")
-    
     return epd
 
 def trigger_update(text):
